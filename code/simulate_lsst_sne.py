@@ -1,0 +1,350 @@
+#This code simulates SN as discovered by LSST (note that LSST cadence is not involved at this stage).
+#The inputs are a rate for SN Ia and CC SN, sky area, survey length, discovery criteria, limiting mag.
+#The code outputs a csv of all SN generated with magnitudes on each night since the discovery criteria
+#was met, and up until the SN brightness fades below the limiting mag of the telescope.
+#Author: Elizabeth Swann
+#Date last updated: 23/07/18
+#################################
+#Imports
+import matplotlib
+matplotlib.use('agg')
+import numpy as np
+import sncosmo
+from astropy.table import Table
+from astropy.cosmology import FlatLambdaCDM, z_at_value
+import astropy.units as u
+from scipy.interpolate import interp1d
+import random
+import pandas as pd
+import matplotlib.pyplot as plt
+####################################
+#Inputs
+
+path_to_master_dir='/mnt/lustre/eswann/TiDES/code/SNcode/Jon_example/'
+
+myfile=open(path_to_master_dir+'output_files/Catalouge_sne_all.csv','wb')
+
+np.random.seed(12334423)
+
+#Set up survey parameters
+area = 1. #Area in sq degrees (actual = 18000 deg 2)
+mjd_start=59215. #Jan 01 2021
+mjd_end=61039.	#Dec 30 2025
+
+#print (mjd_start-mjd_end)/3.
+
+print 'Starting simulation of SN survey'
+print 'Survey is '+str((mjd_end-mjd_start)/365)+' years  long'
+print 'Area of survey is '+str(area)+' sq. degrees'
+print 'Limiting magnitude of survey is 24 mag'
+
+#Note phase_restframe is ALWAYS the number of days after explosion NOT days about peak
+myfile.write('sn_id,rmag,start_date,end_date,sn_type,redshift,phase_restframe,x1,c,gmag,imag\n')
+
+###Maybe change to LSST mags in all LSST bands and then change to SDSS mags afterwards
+#We use sdss band passes as magnitudes required by 4MOST must be the SDSS -AB mags
+obs=Table({'time' : list(np.arange(mjd_start,mjd_end,1))*3,
+	   'band' : ['sdssg']*int((mjd_end-mjd_start))+
+		    ['sdssr']*int((mjd_end-mjd_start))+
+		    ['sdssi']*int((mjd_end-mjd_start)),
+	   'gain' : [5.,5.,5.]*int((mjd_end-mjd_start)),
+	   'skynoise' : [3.1e-50,3.1e-50,3.1e-50]*int((mjd_end-mjd_start)),
+	   'zp' : [14.344]*int((mjd_end-mjd_start))+
+		  [14.233]*int((mjd_end-mjd_start))+
+		  [13.890]*int((mjd_end-mjd_start)),
+	   'zpsys' : ['ab', 'ab', 'ab']*int((mjd_end-mjd_start))})
+
+#-------------------------------------------------------------------------------------------------
+#Define the simulation function
+def create_sne_simulation(sn_type,model,start_phase,params,myfile,snid):
+	#Create Ia simulation
+	lcs=sncosmo.realize_lcs(obs,model,params,trim_observations=True,scatter=False)
+	for k in range(len(lcs)):
+		fluxes=lcs[k]['flux'].quantity
+		time=lcs[k]['time'].quantity
+		band=lcs[k]['band']
+		redshift=lcs[k].meta['z']
+
+		#Find magnitude measrements for each filter
+		idxs_r=np.where(band == 'sdssr')[0]
+		time_r=time[idxs_r]
+		fluxes_r=np.array(fluxes[idxs_r],dtype=float)
+
+		idxs_g=np.where(band == 'sdssg')[0]
+		time_g=time[idxs_g]
+		fluxes_g=np.array(fluxes[idxs_g],dtype=float)
+
+		idxs_i=np.where(band=='sdssi')[0]	
+		time_i=time[idxs_i]
+		fluxes_i=np.array(fluxes[idxs_i],dtype=float)	
+
+		mask_r=np.where((fluxes_r>0.)&(fluxes_i>0.)&(fluxes_g>0.))[0]
+		obs_flux_r=fluxes_r[mask_r]
+		obs_time_r=time_r[mask_r]
+		obs_flux_g=fluxes_g[mask_r]
+		obs_time_g=time_g[mask_r]
+		obs_flux_i=fluxes_i[mask_r]
+		obs_time_i=time_g[mask_r]
+	
+		full_rband_mag=np.zeros(len(obs_flux_r))
+		full_iband_mag=np.zeros(len(obs_flux_r))
+		full_gband_mag=np.zeros(len(obs_flux_r))
+		for i in range(len(obs_flux_r)):
+			full_rband_mag[i]=ab.band_flux_to_mag(np.array(obs_flux_r[i]), 'sdssr')
+			full_iband_mag[i]=ab.band_flux_to_mag(np.array(obs_flux_i[i]), 'sdssi')
+			full_gband_mag[i]=ab.band_flux_to_mag(np.array(obs_flux_g[i]), 'sdssg')
+		mask=np.where(full_rband_mag<24.)
+		rband_mag=full_rband_mag[mask]
+		rband_time=obs_time_r[mask]
+		iband_mag=full_iband_mag[mask]
+		gband_mag=full_gband_mag[mask]
+
+		days_after_exp_restframe=((rband_time-lcs[k].meta['t0'])/(1.+lcs[k].meta['z']))-start_phase
+		if len(rband_mag)==0:
+			continue
+		else:
+			#print rband_mag, rband_time
+			start_time=rband_time
+			end_time=rband_time
+			if sn_type=='SNIa':
+				for l in range(0,len(rband_mag)):
+					myfile.write(str(snid)+','+str(rband_mag[l])+','+str(start_time[l])+','+str(end_time[l])+','+str(sn_type)+','+str(redshift)+','+str(days_after_exp_restframe[l])+','+str(lcs[k].meta['x1'])+','+str(lcs[k].meta['c'])+','+str(gband_mag[l])+','+str(iband_mag[l])+'\n')
+			else:
+				for l in range(0,len(rband_mag)):
+					myfile.write(str(snid)+','+str(rband_mag[l])+','+str(start_time[l])+','+str(end_time[l])+','+str(sn_type)+','+str(redshift)+','+str(days_after_exp_restframe[l])+',-99.,-99.,'+str(gband_mag[l])+','+str(iband_mag[l])+'\n')
+			snid+=1
+	return snid
+
+#-------------------------------------------------------------------------------------------------
+#Input SN Rates
+#Sn Ia's (Using Chris Frohmaier's rates - Frohmaier et al in prep.)
+
+cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
+
+dm = 24 - -19.1		#Work out limiting magnitude for a Ia
+
+r0 = 2.27e-5		#Rate parameters
+a = 1.7			#Rate parameters
+
+#Set up rate function for sncosmo
+def snrate(z):
+	return r0*(1+z)**a
+
+#Maximum z to which we can see SNe Ia with LSST
+zmax=z_at_value(cosmo.distmod, dm*u.mag)
+
+#-------------------------------------------------------------------------------------------------
+#Generate SNIa redshifts
+
+redshifts = list(sncosmo.zdist(0., zmax, time=(mjd_end-mjd_start), area=area, ratefunc=snrate))
+redshifts=np.array(redshifts,dtype=float)
+num_Ia=len(redshifts)
+
+#-------------------------------------------------------------------------------------------------
+#Make 0.8 Ia, 0.15 Ia-91T, 0.05 Ia-91bg, and split in different types of Ia using numbers from Li et al 2011c.
+
+redshifts_91bg=random.sample(redshifts,int(num_Ia*0.05))
+bg_idx=np.isin(redshifts,redshifts_91bg,invert=True)
+redshifts_91bg=random.sample(redshifts_91bg,int(len(redshifts_91bg)*0.4545))
+
+redshifts=redshifts[bg_idx]
+
+redshifts_91T=random.sample(redshifts,int(num_Ia*0.15))
+T_idx=np.isin(redshifts,redshifts_91T,invert=True)
+redshifts_91T=random.sample(redshifts_91T,int(len(redshifts_91T)*0.882))
+
+redshifts_Ia=redshifts[T_idx]
+redshifts_Ia=random.sample(redshifts_Ia,int(len(redshifts_Ia)*0.407))
+
+ab = sncosmo.get_magsystem('ab')
+snid=0
+
+#-------------------------------------------------------------------------------------------
+#Create Ia parameters
+#-------------------------------------------------------------------------------------------
+
+sn_type='SNIa'
+model=sncosmo.Model(source='salt2')
+start_phase=-20.
+
+params=[dict() for x in range(len(redshifts_Ia))]
+for j in range (len(redshifts_Ia)):
+	#We want absolute magnitude to be varied about -19.1 with some scatter on the hubble diagram
+	mabs=np.random.normal(-19.1,0.2)
+	model.set(z=redshifts_Ia[j])
+	model.set_source_peakabsmag(mabs,'bessellb','ab')
+	x0 = model.get('x0')
+	#Create some x1 and c variation, when matching to templates match to closest one
+	p={'z':redshifts_Ia[j], 't0':np.random.uniform(mjd_start,mjd_end), 'x0':x0, 'x1':np.random.normal(0.,0.3), 'c':np.random.normal(0.,0.1)}
+	params[j]=p
+
+snid=create_sne_simulation(sn_type,model,start_phase,params,myfile,snid)
+
+#--------------------------------------------------------
+#91T
+model=sncosmo.Model(source='nugent-sn91t')
+start_phase=0.
+
+sn_type='SNIa-91T'
+params=[dict() for x in range(len(redshifts_91T))]
+for i in range(len(redshifts_91T)):
+	p={'t0':np.random.uniform(mjd_start,mjd_end), 'z':redshifts_91T[i]}
+	mabs=-19.4
+	model.set(z=redshifts_91T[i])
+	model.set_source_peakabsmag(mabs,'bessellb','ab')
+	params[i]=p
+
+snid=create_sne_simulation(sn_type,model,start_phase,params,myfile,snid)
+
+#-------------------------------------------------------------------------------------------------
+#Create Ia-91bg parameters
+#-------------------------------------------------------------------------------------------------
+
+model=sncosmo.Model(source='nugent-sn91bg')
+start_phase=0.
+
+sn_type='SNIa-91bg'
+params=[dict() for x in range(len(redshifts_91bg))]
+for i in range(len(redshifts_91bg)):
+	p={'t0':np.random.uniform(mjd_start,mjd_end), 'z':redshifts_91bg[i]}
+	mabs=-18.5
+	model.set(z=redshifts_91bg[i])
+	model.set_source_peakabsmag(mabs,'bessellb','ab')
+	params[i]=p
+
+snid=create_sne_simulation(sn_type,model,start_phase,params,myfile,snid)
+
+#-------------------------------------------------------------------------------------------------
+#Input SN Rates
+#SN Core Collapse Rate
+#Parametrised by the SFH of the Universe (Li et al 2008), anchored with low-redshift CC SDSS point (Taylor et al 2014)
+#Split into different types of core collapse using numbers from Richardson et al 2014.
+dm_Ib = 24 - -17.54	#Work out limiting magnitude for a CC (assumed peak brightness = -18.0)
+dm_Ic = 24 - -17.67
+dm_IIL = 24 - -17.98
+dm_IIP = 24 - -16.8
+
+def CC_rate(z):
+	"""
+	Model: Li 2008
+	Anchor: Low redshift measurement of rate of CC
+	"""
+	H0=cosmo.H0
+	red_H0=H0/70.	#reduced h0_70 (as defined in SDSS anchor)
+	#select which model 
+	anchor_point_z = 0.072
+	anchor_point_rate =  1.06*10.**-4*(u.year)**-1*(u.Mpc)**-3*(red_H0)**-3
+
+	(a, b, c, d) = (0.0157, 0.118, 3.23, 4.66) #from Li 2008 paper
+	SFH_function = (a+b*z)/(1.+(z/c)**d)
+	SFH_at_anchor=(a+b*anchor_point_z)/(1.+(anchor_point_z/c)**d)
+    
+	Volumetric_Rate_CC_func = anchor_point_rate * SFH_function/SFH_at_anchor
+
+	return Volumetric_Rate_CC_func.value
+
+#Maximum z to which we can see SNe Ia with LSST
+zmax_Ib=z_at_value(cosmo.distmod, dm_Ib*u.mag)
+zmax_Ic=z_at_value(cosmo.distmod, dm_Ic*u.mag)
+zmax_IIL=z_at_value(cosmo.distmod, dm_IIL*u.mag)
+zmax_IIP=z_at_value(cosmo.distmod, dm_IIP*u.mag)
+
+#-------------------------------------------------------------------------------------------------
+#Generate SNII redshifts
+#Make 0.1 Ib, 0.1 Ic, 0.75 II
+redshifts_Ib = list(sncosmo.zdist(0., zmax_Ib, time=(mjd_end-mjd_start), area=area, ratefunc=CC_rate))
+redshifts_Ib=np.array(redshifts_Ib,dtype=float)
+redshifts_Ib=random.sample(redshifts_Ib,int(len(redshifts_Ia)*0.099))
+redshifts_Ib=random.sample(redshifts_Ib,int(len(redshifts_Ib)*0.706))
+
+redshifts_Ic = list(sncosmo.zdist(0., zmax_Ic, time=(mjd_end-mjd_start), area=area, ratefunc=CC_rate))
+redshifts_Ic=np.array(redshifts_Ic,dtype=float)
+redshifts_Ic=random.sample(redshifts_Ic,int(len(redshifts_Ia)*0.19))
+redshifts_Ic=random.sample(redshifts_Ic,int(len(redshifts_Ic)*0.8515608))
+
+redshifts_IIP = list(sncosmo.zdist(0., zmax_IIP, time=(mjd_end-mjd_start), area=area, ratefunc=CC_rate))
+redshifts_IIP=np.array(redshifts_IIP,dtype=float)
+redshifts_IIP=random.sample(redshifts_IIP,int(len(redshifts_Ia)*0.4))
+redshifts_IIP=random.sample(redshifts_IIP,int(len(redshifts_IIP)*0.963))
+
+redshifts_IIL = list(sncosmo.zdist(0., zmax_IIL, time=(mjd_end-mjd_start), area=area, ratefunc=CC_rate))
+redshifts_IIL=np.array(redshifts_IIL,dtype=float)
+redshifts_IIL=random.sample(redshifts_IIL,int(len(redshifts_Ia)*0.09))
+redshifts_IIL=random.sample(redshifts_IIL,int(len(redshifts_IIL)*0.0347))
+
+#-------------------------------------------------------------------------------------------------
+#Create Ib parameters
+#-------------------------------------------------------------------------------------------------
+model=sncosmo.Model(source='snana-2004gv')
+start_phase=-35.3
+
+ab = sncosmo.get_magsystem('ab')
+
+sn_type='SNIb'
+
+params=[dict for x in range(len(redshifts_Ib))]
+for z in range(len(redshifts_Ib)):
+	mabs=-17.54
+	model.set(z=redshifts_Ib[z])
+	model.set_source_peakabsmag(mabs,'bessellb','ab')
+	p={'t0':np.random.uniform(mjd_start,mjd_end), 'z':redshifts_Ib[z]}
+	params[z]=p
+	
+snid=create_sne_simulation(sn_type,model,start_phase,params,myfile,snid)
+
+#-------------------------------------------------------------------------------------------------
+#Create Ic parameters
+#-------------------------------------------------------------------------------------------------
+
+model=sncosmo.Model(source='snana-2004fe')
+start_phase=-35.37
+sn_type='SNIc'
+
+params=[dict() for x in range(len(redshifts_Ic))]
+for z in range(len(redshifts_Ic)):
+	mabs=-17.67
+	model.set(z=redshifts_Ic[z])
+	model.set_source_peakabsmag(mabs,'bessellb','ab')
+	p={'t0':np.random.uniform(mjd_start,mjd_end), 'z':redshifts_Ic[z]}
+	params[z]=p
+
+snid=create_sne_simulation(sn_type,model,start_phase,params,myfile,snid)
+
+#-------------------------------------------------------------------------------------------------
+#Create IIL parameters
+#-------------------------------------------------------------------------------------------------
+
+model=sncosmo.Model(source='nugent-sn2l')
+start_phase=0.
+
+sn_type='SNIIL'
+params=[dict() for x in range(len(redshifts_IIL))]
+for z in range(len(redshifts_IIL)):
+	mabs=-17.98
+	model.set(z=redshifts_IIL[z])
+	model.set_source_peakabsmag(mabs,'bessellb','ab')
+	p={'t0':np.random.uniform(mjd_start,mjd_end), 'z':redshifts_IIL[z]}
+	params[z]=p
+
+snid=create_sne_simulation(sn_type,model,start_phase,params,myfile,snid)
+
+#-------------------------------------------------------------------------------------------------
+#Create IIP parameters
+#-------------------------------------------------------------------------------------------------
+
+model=sncosmo.Model(source='s11-2004hx')
+start_phase=-19.
+
+sn_type='SNIIP'
+params=[dict() for x in range(len(redshifts_IIP))]
+for z in range(len(redshifts_IIP)):
+	mabs=-16.8
+	model.set(z=redshifts_IIP[z])
+	model.set_source_peakabsmag(mabs,'bessellb','ab')
+	p={'t0':np.random.uniform(mjd_start,mjd_end), 'z':redshifts_IIP[z]}
+	params[z]=p
+
+snid=create_sne_simulation(sn_type,model,start_phase,params,myfile,snid)
+
+myfile.close()
+

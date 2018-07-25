@@ -1,0 +1,1040 @@
+#This code simulates SN host galaxies for the SN generated in simulate_lsst_sne.py code.
+#This code uses OzDES and SDSS SN survey data to determine the properties of the simulated
+#galaxies. We use the GALFORM simulation to inform galaxy clustering.
+#Author: Elizabeth Swann
+#Date last updated: 17/07/18
+#CODE MUST BE RUN ON HIGHMEMORY NODE WHERE RAM>64GB
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+import glob
+import csv
+import random as rand
+import numpy as np
+from numpy.random import random
+import math
+import pandas as pd
+from calc_kcor import calc_kcor
+import matplotlib
+matplotlib.use('agg')	#Necessary on sciama to get matplotlib to work
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import matplotlib.colors as clr
+from matplotlib import cm
+from matplotlib.ticker import LinearLocator,FormatStrFormatter
+from mpl_toolkits.mplot3d import Axes3D
+from astropy.io import fits
+from astropy.cosmology import Planck15 as cosmo
+from astropy import units as u
+from astropy.coordinates import SkyCoord
+from scipy import stats
+from scipy.spatial import cKDTree
+from weighted_kde import gaussian_kde as weighted_gauss_kde
+#-----------------------------------------
+path_to_master_dir='/mnt/lustre/eswann/TiDES/code/SNcode/Jon_example/'
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Set random seed for re-duplicability
+np.random.seed(12345)
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Load in SN catalogue
+sn_id,sn_rmag,sn_mjd_start,sn_mjd_end,sn_type,sn_redshift,sn_template=np.loadtxt(
+	path_to_master_dir+'output_files/Catalouge_sne_all_complete.csv',delimiter=',',usecols=(0,1,2,3,4,5,9),
+	unpack=True,skiprows=1,dtype=str
+	)
+
+sn_rmag=np.array(sn_rmag,dtype=float)
+sn_id=np.array(sn_id,dtype=float)
+sn_mjd_start=np.array(sn_mjd_start,dtype=float)
+sn_mjd_end=np.array(sn_mjd_end,dtype=float)
+sn_type=np.array(sn_type,dtype=str)
+sn_redshift=np.array(sn_redshift,dtype=float)
+sn_template=np.array(sn_template,dtype=str)
+
+#Find where the SN Ia are so to give them host galaxies
+Ias_Mask=np.logical_or(sn_type=='SNIa',sn_type=='SNIa-91T',sn_type=='SNIa-91bg')
+SN_Ias_idx=np.where(Ias_Mask)
+
+#Pull the Ia parameters from the files
+Ia_rmag=sn_rmag[SN_Ias_idx]
+Ia_id=sn_id[SN_Ias_idx]
+Ia_mjd_start=sn_mjd_start[SN_Ias_idx]
+Ia_mjd_end=sn_mjd_end[SN_Ias_idx]
+Ia_type=sn_type[SN_Ias_idx]
+Ia_redshift=sn_redshift[SN_Ias_idx]
+Ia_template=sn_template[SN_Ias_idx]
+Ia_ra=np.ones(len(Ia_rmag))
+Ia_dec=np.ones(len(Ia_rmag))
+
+#Number of Galaxies to create = Number of Ias created
+numGal=len(np.unique(Ia_id))
+
+#Find unique SN from ID number
+unique_ids,unique_index_for_id=np.unique(Ia_id,return_index=True)
+#Get unique redshifts for individual SN Ia
+Ia_redshift_unique=Ia_redshift[unique_index_for_id]
+Ia_id_unique=Ia_id[unique_index_for_id]
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Pull the core-collapse SN from the data
+CC_all_rmag=sn_rmag[np.logical_not(Ias_Mask)]
+CC_all_id=sn_id[np.logical_not(Ias_Mask)]
+CC_all_mjd_start=sn_mjd_start[np.logical_not(Ias_Mask)]
+CC_all_mjd_end=sn_mjd_end[np.logical_not(Ias_Mask)]
+CC_all_type=sn_type[np.logical_not(Ias_Mask)]
+CC_all_redshift=sn_redshift[np.logical_not(Ias_Mask)]
+CC_all_template=sn_template[np.logical_not(Ias_Mask)]
+
+#Find unique SN from ID number
+unique_ids,unique_index_for_id=np.unique(CC_all_id,return_index=True)
+#Split CC into first SN instance to get single galaxy for each SNe
+CC_rmag=CC_all_rmag[unique_index_for_id]
+CC_id=CC_all_id[unique_index_for_id]
+CC_mjd_start=CC_all_mjd_start[unique_index_for_id]
+CC_mjd_end=CC_all_mjd_end[unique_index_for_id]
+CC_type=CC_all_type[unique_index_for_id]
+CC_redshift=CC_all_redshift[unique_index_for_id]
+CC_template=CC_all_template[unique_index_for_id]
+
+#Give the CC supernova random positions on the sky within LSST footprint
+#we won't target a lot of these so the large scale structure doesn't matter that much
+CC_theta=360.*np.random.uniform(0,1,size=len(CC_rmag))
+CC_phi=(np.arccos(2.*np.random.uniform(0,1,size=len(CC_rmag))-1)*180./np.pi)-90.
+
+CC_all_theta=np.ones(len(CC_all_rmag))
+CC_all_phi=np.ones(len(CC_all_rmag))
+
+for i in range(len(unique_ids)):
+	idxs=np.where(CC_all_id==unique_ids[i])[0]
+	CC_all_theta[idxs]=CC_theta[i]
+	CC_all_phi[idxs]=CC_phi[i]
+
+CC_mask=np.where((CC_phi>-74.)&(CC_phi<15.))[0]
+CC_all_theta=CC_all_theta[CC_mask]
+CC_all_phi=CC_all_phi[CC_mask]
+CC_all_id=CC_all_id[CC_mask]
+CC_all_rmag=CC_all_rmag[CC_mask]
+CC_all_mjd_start=CC_all_mjd_start[CC_mask]
+CC_all_mjd_end=CC_all_mjd_end[CC_mask]
+CC_all_type=CC_all_type[CC_mask]
+CC_all_redshift=CC_all_redshift[CC_mask]
+CC_all_template=CC_all_template[CC_mask]
+
+CC_coordinates_icrs=SkyCoord(CC_all_theta*u.degree,CC_all_phi*u.degree,frame='icrs')
+CC_coordinates_galactic=CC_coordinates_icrs.galactic
+
+#Cut out the MW galaxy
+CC_mask=np.where(
+	(CC_coordinates_galactic.b.deg>10.)|(CC_coordinates_galactic.b.deg<-10.)
+	)[0]
+
+CC_theta=CC_all_theta[CC_mask]
+CC_phi=CC_all_phi[CC_mask]
+CC_id=CC_all_id[CC_mask]
+CC_rmag=CC_rmag[CC_mask]
+CC_mjd_start=CC_mjd_start[CC_mask]
+CC_mjd_end=CC_mjd_end[CC_mask]
+CC_type=CC_type[CC_mask]
+CC_redshift=CC_redshift[CC_mask]
+CC_template=CC_template[CC_mask]
+
+CC_resolution=np.ones(len(CC_theta))
+CC_ruleset=np.zeros(len(CC_theta),dtype='|S32')
+CC_ruleset[:]='tides_supernova' 
+CC_priority=np.ones(len(CC_theta))*100.
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Open SDSS Sne Survey data
+#t=fits.open('SDSSSneGalsColourSFRInclination_eswann.fit')[1].data #Old SDSS data
+t=fits.open(path_to_master_dir+'input_data_files/SDSS_SNe_Gals_FULL_TABLE.fit')[1].data	
+
+#Load in parameters
+mag_g=np.array(t.field('cModelMag_g'),dtype=float)
+mag_i=np.array(t.field('cModelMag_i'),dtype=float)
+ext_g=np.array(t.field('extinction_g'),dtype=float)
+ext_i=np.array(t.field('extinction_i'),dtype=float)
+redshift=np.array(t.field('z'),dtype=float)
+SFR_log=np.array(t.field('logSFRPEGASE '),dtype=float)
+mass=np.array(t.field('logMassPEGASE'),dtype=float)
+sSFR_log=SFR_log-mass
+
+print 'Loaded SDSS data'
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Derive colours of SDSS galaxies minus MW extinction
+col=(mag_g-ext_g)-(mag_i-ext_i) #Use to match to Cullan Simulation, observed colours
+g_mag=mag_g-ext_g
+i_mag=mag_i-ext_i
+
+pass_mass=[]
+pass_col=[]
+
+sf_mass=[]
+sf_col=[]
+
+for i in range(len(col)):
+	if (SFR_log[i]==-99. or sSFR_log[i]<=-10.75) and col[i]>0.5:
+		pass_col.append(col[i])
+		pass_mass.append(mass[i])
+	elif col[i]>0.5:
+		sf_mass.append(mass[i])
+		sf_col.append(col[i])
+
+#Determine the fraction of star forming to passive galaxies in the SDSS sample
+fraction_sf=float(len(sf_mass))/float(len(pass_mass)+len(sf_mass))
+
+num_gal_sf=int(fraction_sf*numGal)
+num_gal_pass=int(numGal-num_gal_sf)
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Split Ias into galaxies that are passive or starforming
+
+list_possible_idx=np.arange(len(Ia_redshift_unique))
+sf_idx=np.sort(rand.sample(list_possible_idx,num_gal_sf))
+
+pass_idx=np.where([x not in sf_idx for x in list_possible_idx])[0]
+
+Ia_redshift_unique_pass=Ia_redshift_unique[pass_idx]
+Ia_id_unique_pass=Ia_id_unique[pass_idx]
+mjd_start_pass_cat=Ia_mjd_start[pass_idx]
+
+Ia_redshift_unique_sf=Ia_redshift_unique[sf_idx]
+Ia_id_unique_sf=Ia_id_unique[sf_idx]
+mjd_start_sf_cat=Ia_mjd_start[sf_idx]
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Load in redshift magnitude distributions from OzDES
+
+t=fits.open(path_to_master_dir+'input_data_files/OzDES_hosts_only_2016_02_25.fits')[1].data
+redshift=[]
+magr=[]
+
+for i in range(len(t)):
+	if (
+		t[i].field('flag') in ['3','4'] and
+		17.<float(t[i].field('rmag'))<24. and
+		0.<float(t[i].field('z'))<1.0
+		):
+		
+		redshift.append(float(t[i].field('z')))
+		magr.append(float(t[i].field('rmag')))
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Perform kernel density esitmate on redshift and apparent magr
+
+xmin=0.
+xmax=max(redshift)
+ymin=min(magr)
+ymax=max(magr)
+
+#Passive
+Xx,Yy=np.mgrid[xmin:xmax:100j, ymin:ymax:100j]
+positions2=np.vstack([Xx.ravel(),Yy.ravel()])
+values2=np.vstack([redshift,magr])
+kernel_z_r=stats.gaussian_kde(values2)
+Z2=np.reshape(kernel_z_r(positions2).T,Xx.shape)	#Only needed for plotting
+
+print 'redshift magnitude kernel created'
+
+#Split redshift/mag kernel into different redshift bins - redshift is set by SN explosion.
+#zmax=0.7, delta_z=0.05
+
+z_rmag_kde={}
+
+samples_from_kernel=kernel_z_r.resample(1000000)	#1 million resamples
+z_splitting=np.arange(0.,0.75,0.05)			#0-0.7 in bins of 0.05
+for i in range(len(z_splitting)-1):
+	idx=np.where(
+		(z_splitting[i]<samples_from_kernel[0])&(z_splitting[i+1]>samples_from_kernel[0])
+		)
+	mags_to_evaluate=samples_from_kernel[1][idx]
+	z_rmag_kde["z_rmag_kernel{0}".format(i)]=stats.gaussian_kde(mags_to_evaluate)
+
+def evaluate_rmag_kde(redshift,z_rmag_kde):
+	for i in range(len(z_splitting)-1):
+		if z_splitting[i]<redshift<z_splitting[i+1]:
+			kde_num=i
+	rmag_kde=z_rmag_kde["z_rmag_kernel{0}".format(kde_num)].resample(1)
+	return rmag_kde
+
+
+#-------------------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
+#Load in WAVES templates (NOT THE MOST UP-TO-DATE WAVES TEMPLATES, LUKE TO EMAIL NEWEST)
+names_csv,waves_type,waves_colour,waves_mass,waves_sfr,waves_z=np.loadtxt(
+	path_to_master_dir+'input_data_files/waves_template_info.csv',
+	unpack=True,skiprows=1,usecols=(0,1,2,3,4,5),delimiter=',',dtype=str
+	)
+
+col_sf_csv=[]
+mass_sf_csv=[]
+col_pass_csv=[]
+mass_pass_csv=[]
+z_sf_csv=[]
+z_pass_csv=[]
+sf_names=[]
+pass_names=[]
+SFRs_sf=[]
+SFRs_pass=[]
+
+for i in range(len(names_csv)):
+	if waves_type[i]=='Pass':
+		col_pass_csv.append(waves_colour[i])
+		mass_pass_csv.append(waves_mass[i])
+		z_pass_csv.append(waves_z[i])
+		SFRs_pass.append(waves_sfr[i])
+		pass_names.append(names_csv[i])
+	elif waves_type[i]=='SF':
+		col_sf_csv.append(waves_colour[i])
+		mass_sf_csv.append(waves_mass[i])
+		z_sf_csv.append(waves_z[i])
+		SFRs_sf.append(waves_sfr[i])
+		sf_names.append(names_csv[i])
+
+col_sf_csv=np.array(col_sf_csv)
+mass_sf_csv=np.array(mass_sf_csv)
+col_pass_csv=np.array(col_pass_csv)
+mass_pass_csv=np.array(mass_pass_csv)
+z_sf_csv=np.array(z_sf_csv)
+z_pass_csv=np.array(z_pass_csv)
+
+sf_names_csv=np.array(sf_names,dtype=str)
+pass_names_csv=np.array(pass_names,dtype=str)
+
+SFRs_sf=np.array(SFRs_sf)
+SFRs_pass=np.array(SFRs_pass)
+
+print 'Loaded in WAVES templates'
+#---------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Load in GALFORM simulation galaxies
+df=pd.read_csv(
+	path_to_master_dir+'input_data_files/TiDES_mock_full_reform.dat',
+	delimiter='  ',engine='python',skiprows=[0],header=None,nrows=10000
+	)
+conv_arr= df.values
+sim_ra=np.delete(conv_arr,[1,2,3,4,5,6,7,8],axis=1) 
+sim_dec=np.delete(conv_arr,[0,2,3,4,5,6,7,8],axis=1) 
+sim_z_obs = np.delete(conv_arr,[0,1,3,4,5,6,7,8],axis=1) 
+sim_r = np.delete(conv_arr,[0,1,2,3,5,6,7,8],axis=1) 
+sim_col = np.delete(conv_arr,[0,1,2,3,4,6,7,8],axis=1) 
+sim_mass = np.delete(conv_arr,[0,1,2,3,4,5,7,8],axis=1) 
+sim_SFR = np.delete(conv_arr,[0,1,2,3,4,5,6,8],axis=1)
+sim_num_sne=np.delete(conv_arr,[0,1,2,3,4,5,6,7],axis=1) 
+
+#converting into 1D array from pandas
+sim_ra=sim_ra.ravel()
+sim_dec=sim_dec.ravel()
+sim_z_obs = sim_z_obs.ravel()
+sim_r = sim_r.ravel()
+sim_col = sim_col.ravel()
+sim_mass = np.log10(sim_mass.ravel())
+sim_SFR =np.log10(sim_SFR.ravel())
+sim_num_sne=sim_num_sne.ravel()
+
+mask=np.isfinite(sim_SFR)
+
+sim_ra=sim_ra[mask]
+sim_dec=sim_dec[mask]
+sim_z_obs=sim_z_obs[mask]
+sim_r=sim_r[mask]
+sim_col=sim_col[mask]
+sim_mass=sim_mass[mask]
+sim_SFR=sim_SFR[mask]
+sim_num_sne=sim_num_sne[mask]
+
+print 'Loaded in simulation Data'
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Split GALFORM simulation data into passive/starforming
+cullan_length=len(sim_SFR)
+
+indices_passive_gals=np.where((sim_SFR-sim_mass)<=-10.75)[0]
+indices_sf_gals=np.where((sim_SFR-sim_mass)>-10.75)[0]
+
+sim_z_pass=sim_z_obs[indices_passive_gals]
+sim_r_pass=sim_r[indices_passive_gals]
+sim_col_pass=sim_col[indices_passive_gals]
+sim_mass_pass=sim_mass[indices_passive_gals]
+sim_num_sne_pass=sim_num_sne[indices_passive_gals]
+sim_ra_pass=sim_ra[indices_passive_gals]
+sim_dec_pass=sim_dec[indices_passive_gals]
+
+sim_z_sf=sim_z_obs[indices_sf_gals]
+sim_r_sf=sim_r[indices_sf_gals]
+sim_col_sf=sim_col[indices_sf_gals]
+sim_mass_sf=sim_mass[indices_sf_gals]
+sim_num_sne_sf=sim_num_sne[indices_sf_gals]
+sim_ra_sf=sim_ra[indices_sf_gals]
+sim_dec_sf=sim_dec[indices_sf_gals]
+
+sim_sfr_sf=sim_SFR[indices_sf_gals]
+sim_sfr_pass=sim_SFR[indices_passive_gals]
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Create KDE of SFR from Cullan's sim of SFRs
+
+#Perform Kernel Density estimation on SFR
+kernel_SFR_pass=weighted_gauss_kde(np.array(sim_sfr_pass),weights=sim_num_sne_pass)
+kernel_SFR_sf=weighted_gauss_kde(np.array(sim_sfr_sf),weights=sim_num_sne_sf)
+
+x_grid_sf=np.linspace(min(sim_sfr_sf),max(sim_sfr_sf),50)
+x_grid_pass=np.linspace(min(sim_sfr_pass),max(sim_sfr_pass),50)
+
+evaluation_SFR_pass=kernel_SFR_pass(x_grid_pass)
+evaluation_SFR_sf=kernel_SFR_sf(x_grid_sf)
+
+print 'SFR kernel done'
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Perform kernel density esitmate on the masses, and colours from SDSS
+
+xmin=8
+xmax=12
+ymin=-0.2
+ymax=1.5
+
+#Passive
+X,Y=np.mgrid[xmin:xmax:100j, ymin:ymax:100j]
+positions=np.vstack([X.ravel(),Y.ravel()])
+values=np.vstack([pass_mass,pass_col])
+kernel=stats.gaussian_kde(values)
+Z=np.reshape(kernel(positions).T,X.shape)
+
+#Star Forming
+values1=np.vstack([sf_mass,sf_col])
+kernel1=stats.gaussian_kde(values1)
+Z1=np.reshape(kernel1(positions).T,X.shape)
+
+print 'mass, colour kernel done'
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Get redshifts and magnitudes for the galaxies
+pass_magr_cat=np.zeros(len(Ia_id_unique_pass))
+sf_magr_cat=np.zeros(len(Ia_id_unique_sf))
+
+for l in range(len(pass_magr_cat)):
+	pass_magr_cat[l]=evaluate_rmag_kde(Ia_redshift_unique_pass[l],z_rmag_kde)
+for l in range(len(sf_magr_cat)):
+	sf_magr_cat[l]=evaluate_rmag_kde(Ia_redshift_unique_sf[l],z_rmag_kde)
+
+sf_redshift_cat=Ia_redshift_unique_sf
+pass_redshift_cat=Ia_redshift_unique_pass
+
+print 'magnitude kernel resampled'
+
+#---------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------
+#Resample SFR kernel
+sf_sfr_cat=kernel_SFR_sf.resample(len(sf_redshift_cat))[0]
+pass_sfr_cat=kernel_SFR_pass.resample(len(pass_redshift_cat))[0]
+print 'SFR kernel resampled'
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Resample colour and mass kernel
+sf_kernel_distrib=kernel.resample(len(sf_redshift_cat))
+sf_mass_cat=sf_kernel_distrib[0]
+sf_col_cat=sf_kernel_distrib[1]
+pass_kernel_distrib=kernel1.resample(len(pass_redshift_cat))
+pass_mass_cat=pass_kernel_distrib[0]
+pass_col_cat=pass_kernel_distrib[1]
+print 'resampled colour and mass kernel'
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Function to find the closest GALFORM galaxy - first find the closest in a redshift shell
+#Then match by mass, colour, SFR, magr
+#If galaxy already chosen, look for next closest galaxy in redshift range
+
+def find_galaxy_coordinates(
+		cat_z,cat_mass,cat_col,cat_SFR,cat_magr,
+		sim_z,sim_mass,sim_col,sim_SFR,sim_r,sim_ra,sim_dec,
+		idxs_chosen_gals
+		):
+	all_indexes=np.array(range(len(sim_z)),dtype=int)
+	idx=np.where(
+			((cat_z-0.05)<sim_z)&(sim_z<(cat_z+0.05))
+			&
+			([x not in np.array(idxs_chosen_gals,dtype=int) for x in range(len(sim_z))])
+			)[0]
+	if len(idx)!=0:
+		new_indexes=all_indexes[idx]
+		sim_r=sim_r[idx]
+		sim_col=sim_col[idx]
+		sim_mass=sim_mass[idx]
+		sim_ra=sim_ra[idx]
+		sim_SFR=sim_SFR[idx]
+		sim_dec=sim_dec[idx]
+
+		match_params_cat=np.dstack([cat_col,cat_mass,cat_SFR,cat_magr])[0]
+		match_params_sim=np.dstack([sim_col,sim_mass,sim_SFR,sim_r])[0]
+
+		tree_points=cKDTree(match_params_sim)
+		distances,indexes_matching=tree_points.query(match_params_cat,k=1)
+		ra=sim_ra[indexes_matching]
+		dec=sim_dec[indexes_matching]
+		idxs_chosen_gals.append(new_indexes[indexes_matching[0]])
+		return ra, dec, idxs_chosen_gals
+
+	else:	#else supernova is from a hostless galaxy we cant see
+		ra=-999.
+		dec=-999.
+		return ra, dec, idxs_chosen_gals
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Get SF coordinates
+ra_sf_cat=np.zeros(len(sf_mass_cat))
+dec_sf_cat=np.zeros(len(sf_mass_cat))
+
+all_sf_indexes=np.array(range(len(sim_z_sf)),dtype=int)
+all_pass_indexes=np.array(range(len(sim_z_sf)),dtype=int)
+
+idxs_chosen_sf=[]
+for i in range(0,len(sf_mass_cat)):
+	ras,decs,idxs=find_galaxy_coordinates(
+		sf_redshift_cat[i],sf_mass_cat[i],sf_col_cat[i],sf_sfr_cat[i],sf_magr_cat[i],
+		sim_z_sf,sim_mass_sf,sim_col_sf,sim_sfr_sf,sim_r_sf,sim_ra_sf,sim_dec_sf,
+		idxs_chosen_sf
+		)
+	ra_sf_cat[i]=ras
+	dec_sf_cat[i]=decs
+	idxs_chosen_sf=idxs
+
+#Get passive coordinates
+ra_pass_cat=np.zeros(len(pass_mass_cat))
+dec_pass_cat=np.zeros(len(pass_mass_cat))
+idxs_chosen_pass=[]
+for i in range(0,len(pass_mass_cat)):
+	ras,decs,idxs=find_galaxy_coordinates(
+		pass_redshift_cat[i],pass_mass_cat[i],pass_col_cat[i],pass_sfr_cat[i],
+		pass_magr_cat[i],sim_z_pass,sim_mass_pass,sim_col_pass,sim_sfr_pass,
+		sim_r_pass,sim_ra_pass,sim_dec_pass,
+		idxs_chosen_pass
+		)
+	ra_pass_cat[i]=ras
+	dec_pass_cat[i]=decs
+	idxs_chosen_pass=idxs
+
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Do a shift in colour and mass as the SF WAVES templates are off by this equation
+#Probably better to shift the templates instead of the galaxies
+#change to the other way around when have time
+sf_col_cat=sf_col_cat-0.14*(0.5/sf_col_cat)-0.7
+sf_mass_cat=sf_mass_cat-0.75
+
+print 'matching to WAVEs templates'
+
+#Perform matching to WAVES templates in mass, colour, redshift, SFR
+match_params_sf=np.dstack([sf_sfr_cat,sf_mass_cat/10.,sf_col_cat,sf_redshift_cat])[0]
+match_params_pass=np.dstack([pass_mass_cat/10.,pass_col_cat,pass_redshift_cat])[0]
+
+csv_points_sf=np.dstack([SFRs_sf,mass_sf_csv/10.,col_sf_csv,z_sf_csv])[0]
+csv_points_pass=np.dstack([mass_pass_csv/10.,col_pass_csv,z_pass_csv])[0]
+
+#Find closest model
+tree_points_pass=cKDTree(csv_points_pass)
+tree_points_sf=cKDTree(csv_points_sf)
+
+dist_sf,indexes_sf=tree_points_sf.query(match_params_sf,k=1)
+dist_pass,indexes_pass=tree_points_pass.query(match_params_pass,k=1)
+
+names_sf_cat=[]
+names_pass_cat=[]
+
+
+for i in range(len(indexes_sf)):
+	names_sf_cat.append(sf_names[indexes_sf[i]]+'.fits')
+
+for i in range(len(indexes_pass)):
+	names_pass_cat.append(pass_names[indexes_pass[i]]+'.fits')
+
+#Concatenate results for the catalogue
+names_cat=np.concatenate((names_sf_cat,names_pass_cat))
+ra_cat=np.concatenate((ra_sf_cat,ra_pass_cat))
+dec_cat=np.concatenate((dec_sf_cat,dec_pass_cat))
+z_cat=np.concatenate((sf_redshift_cat,pass_redshift_cat))
+SFR_cat=np.concatenate((sf_sfr_cat,pass_sfr_cat))
+mass_cat=np.concatenate((sf_mass_cat,pass_mass_cat))
+col_cat=np.concatenate((sf_col_cat,pass_col_cat))
+magr_cat=np.concatenate((sf_magr_cat,pass_magr_cat))
+mjd_start_cat=np.concatenate((mjd_start_sf_cat,mjd_start_pass_cat))
+mjd_end_cat=np.ones(len(names_cat))*61039.
+matching_Ia_indexes=np.concatenate((Ia_id_unique_sf,Ia_id_unique_pass))
+id_cat=np.arange(0,len(names_cat),1)
+
+#Match ra and dec to the correct SN indices, and randomly slightly offset the galaxy
+#from the SNe
+for i in range(len(matching_Ia_indexes)):
+	idxs=np.where(Ia_id==matching_Ia_indexes[i])[0]
+	Ia_ra[idxs]=ra_cat[i]+(0.001*np.random.normal(0.,1.,1)[0])
+	Ia_dec[idxs]=dec_cat[i]+(0.001*np.random.normal(0.,1.,1)[0])
+
+#Make the catalogues of hosts and sne separately
+hostless_idx_cat=np.where(ra_cat==-999.)[0]
+hostless_Ia_ids=matching_Ia_indexes[hostless_idx_cat]
+
+#Give SN Ia without a host galaxy some random coordinates
+hostless_ras=360.*np.random.uniform(0,1,size=len(hostless_Ia_ids))
+hostless_decs=(np.arccos(2.*np.random.uniform(
+								0,1,size=len(hostless_Ia_ids))-1)*180./np.pi
+								)-90.
+
+for i in range(len(hostless_Ia_ids)):
+	idxs=np.where(Ia_id==hostless_Ia_ids[i])[0]
+	Ia_ra[idxs]=hostless_ras[i]
+	Ia_dec[idxs]=hostless_decs[i]
+
+#Cut the galaxy and other unwanted parts of the sky out to 4MOSTs rough footprint
+Ia_mask=np.where((Ia_dec>-74.)&(Ia_dec<15.))[0]
+Ia_ra=Ia_ra[Ia_mask]
+Ia_dec=Ia_dec[Ia_mask]
+Ia_id=Ia_id[Ia_mask]
+Ia_rmag=Ia_rmag[Ia_mask]
+Ia_mjd_start=Ia_mjd_start[Ia_mask]
+Ia_mjd_end=Ia_mjd_end[Ia_mask]
+Ia_type=Ia_type[Ia_mask]
+Ia_redshift=Ia_redshift[Ia_mask]
+Ia_template=Ia_template[Ia_mask]
+
+Ia_coordinates_icrs=SkyCoord(Ia_ra*u.degree,Ia_dec*u.degree,frame='icrs')
+Ia_coordinates_galactic=Ia_coordinates_icrs.galactic
+
+#Cut out the MW galaxy
+Ia_mask=np.where(
+	(Ia_coordinates_galactic.b.deg>10.)|(Ia_coordinates_galactic.b.deg<-10.)
+	)[0]
+
+Ia_ra=Ia_ra[Ia_mask]
+Ia_dec=Ia_dec[Ia_mask]
+Ia_id=Ia_id[Ia_mask]
+Ia_rmag=Ia_rmag[Ia_mask]
+Ia_mjd_start=Ia_mjd_start[Ia_mask]
+Ia_mjd_end=Ia_mjd_end[Ia_mask]
+Ia_type=Ia_type[Ia_mask]
+Ia_redshift=Ia_redshift[Ia_mask]
+Ia_template=Ia_template[Ia_mask]
+
+Ia_resolution=np.ones(len(Ia_ra))
+Ia_ruleset=np.zeros(len(Ia_ra),dtype='|S32')
+Ia_ruleset[:]='tides_supernova' 
+Ia_priority=np.ones(len(Ia_ra))*100.
+
+#Cut out coordinates for galaxies from non-4MOST footprint areas
+cat_mask=np.where((dec_cat>-74.)&(dec_cat<15.))[0]
+ra_cat=ra_cat[cat_mask]
+dec_cat=dec_cat[cat_mask]
+id_cat=id_cat[cat_mask]
+magr_cat=magr_cat[cat_mask]
+mjd_start_cat=mjd_start_cat[cat_mask]
+mjd_end_cat=mjd_end_cat[cat_mask]
+z_cat=z_cat[cat_mask]
+names_cat=names_cat[cat_mask]
+
+cat_coordinates_icrs=SkyCoord(ra_cat*u.degree,dec_cat*u.degree,frame='icrs')
+cat_coordinates_galactic=cat_coordinates_icrs.galactic
+
+#Cut out the MW galaxy
+cat_mask=np.where(
+	(cat_coordinates_galactic.b.deg>10.)|(cat_coordinates_galactic.b.deg<-10.)
+	)[0]
+
+ra_cat=ra_cat[cat_mask]
+dec_cat=dec_cat[cat_mask]
+id_cat=id_cat[cat_mask]
+magr_cat=magr_cat[cat_mask]
+mjd_start_cat=mjd_start_cat[cat_mask]
+mjd_end_cat=mjd_end_cat[cat_mask]
+z_cat=z_cat[cat_mask]
+names_cat=names_cat[cat_mask]
+
+type_cat=np.zeros(len(ra_cat),dtype='|S32')
+type_cat[:]='host_galaxy' 
+ids_char=np.arange(0,len(ra_cat),dtype=int)
+resolution=np.ones(len(ra_cat))
+ruleset=np.zeros(len(ra_cat),dtype='|S32')
+ruleset[:]='tides_host' 
+priority=np.array(np.floor(magr_cat*(100./max(magr_cat))),dtype=int)
+
+#Write out Galaxy catalogue for later reference
+myfile=open(path_to_master_dir+'output_files/Galaxy_catalogue.csv','w')
+myfile.write('id,z,ra,dec,mag,priority,resolution,template,ruleset,sfr,mass,color,start,end\n')
+for i in range(len(ra_cat)):
+	myfile.write(str(ids_char[i])+','+str(z_cat[i])+','+str(ra_cat[i])+','+str(dec_cat[i])+','+str(magr_cat[i])+','+str(priority[i])+','+str(resolution[i])+','+str(names_cat[i])+','+str(ruleset[i])+','+str(SFR_cat[i])+','+str(mass_cat[i])+','+str(col_cat[i])+','+str(mjd_start_cat[i])+','+str(mjd_end_cat[i])+'\n')
+
+myfile.close()
+
+#concatenate all the SNE observations
+sne_ra=np.concatenate((Ia_ra,CC_theta))
+sne_dec=np.concatenate((Ia_dec,CC_phi))
+sne_rmag=np.concatenate((Ia_rmag,CC_rmag))
+sne_id=np.concatenate((Ia_id,CC_id))
+sne_mjd_start=np.concatenate((Ia_mjd_start,CC_mjd_start))
+sne_mjd_end=np.concatenate((Ia_mjd_end,CC_mjd_end))
+sne_type=np.concatenate((Ia_type,CC_type))
+sne_z=np.concatenate((Ia_redshift,CC_redshift))
+sne_template=np.concatenate((Ia_template,CC_template))
+sne_resolution=np.concatenate((Ia_resolution,CC_resolution))
+sne_ruleset=np.concatenate((Ia_ruleset,CC_ruleset))
+sne_priority=np.concatenate((Ia_priority,CC_priority))
+
+myfile=open(path_to_master_dir+'output_files/Supernova_catalogue_reduced.csv','w')
+myfile.write('id,z,ra,dec,rmag,type,priority,resolution,template,start,end,ruleset\n')
+
+for i in range(len(sne_ra)):
+	myfile.write(str(sne_id[i])+','+str(sne_z[i])+','+str(sne_ra[i])+','+str(sne_dec[i])+','+str(sne_rmag[i])+','+str(sne_type[i])+','+str(sne_priority[i])+','+str(sne_resolution[i])+','+str(sne_template[i])+','+str(sne_mjd_start[i])+','+str(sne_mjd_end[i])+','+'tides_supernova'+'\n')
+
+myfile.close()
+
+
+print 'Catalogue creation finished'
+
+
+
+#-------------------------------------------------------------------------------------------------
+#Various plots to eventually put into another script
+'''
+plt.figure()
+plt.scatter(pass_mass,pass_col,s=0.3,c='b',label='Passive')
+plt.scatter(sf_mass,sf_col,s=0.3,c='k',label='Starforming')
+plt.legend()
+plt.savefig('mag_vs_col_sdss.png')
+
+plt.figure()
+plt.scatter(sim_r_pass,sim_col_pass,s=0.3,c='b',label='Passive')
+plt.scatter(sim_r_sf,sim_col_sf,s=0.3,c='k',label='Starforming')
+plt.legend()
+plt.savefig('mag_vs_col_sim.png')
+
+plt.figure()
+plt.hist(sim_sfr_pass,bins=50,normed=1,weights=sim_num_sne_pass)
+plt.plot(x_grid_pass,evaluation_SFR_pass)
+plt.title('SFR Passive')
+plt.xlabel('log10(SFR)')
+plt.ylabel('Normalised Distribution GALFORM P(log10(SFR))')
+plt.savefig('SFR_kde_pass.png')
+plt.close()
+
+plt.figure()
+plt.hist(sim_sfr_sf,bins=50,normed=1,weights=sim_num_sne_sf)
+plt.plot(x_grid_sf,evaluation_SFR_sf)
+plt.title('SFR Star forming')
+plt.xlabel('log10(SFR)')
+plt.ylabel('Normalised Distribution GALFORM P(log10(SFR))')
+plt.savefig('SFR_kde_sf.png')
+plt.close()
+
+print 'plot done'
+
+plt.scatter(masses,SFRs,label='Luke',color='b',s=[2])
+plt.scatter(mass,SFR_log,label='SDSS',color='r',s=[2])
+plt.xlabel('log10(Stellar Mass)')
+plt.ylabel('SFR')
+plt.legend(loc=2)
+plt.savefig('SFR_vs_mass.png')
+plt.close()
+
+plt.scatter(masses,color,label='WAVES Templates',color='k',s=[2])
+plt.scatter(sf_mass,sf_col,label='SDSS SNIa Hosts',color='r',s=[2])
+plt.scatter(pass_mass,pass_col,color='r',s=[2])
+plt.xlabel(r'log10(Stellar Mass) Msun')
+plt.ylabel(r'Rest frame g-i colour')
+#plt.ylim(-0.2,1.5)
+plt.xlim(7,12)
+plt.legend(loc=2)
+plt.savefig('colour_vs_stellar_mass.png')
+plt.close()
+
+
+fig,ax=plt.subplots(2,sharex=True)
+#ax.imshow(np.rot90(Z),cmap=plt.cm.gist_earth_r,extent=[xmin,xmax,ymin,ymax])
+ax[0].imshow(np.rot90(Z),cmap=plt.cm.gist_earth_r,extent=[xmin,xmax,ymin,ymax],aspect='auto')
+#ax.scatter(pass_mass,pass_col,s=[2],color='r',label='Passive Galaxies')
+#ax[0].scatter(randomtest2[0],randomtest2[1],s=[2],color='k',label='Test distribution')
+ax[0].scatter(pass_mass,pass_col,s=[2],color='k',label='Passive Galaxies')
+ax[0].set_xlim([xmin,xmax])
+ax[0].set_ylim([ymin,ymax])
+ax[0].set_xlabel('log10(Stellar Mass) Msun')
+ax[0].set_ylabel('Rest frame g-i colour')
+ax[0].legend(loc=2)
+ax[1].imshow(np.rot90(Z1),cmap=plt.cm.gist_earth_r,extent=[xmin,xmax,ymin,ymax],aspect='auto')
+#ax[1].scatter(randomtest[0],randomtest[1],s=[2],color='k',label='Test distribution')
+#ax[1].imshow(np.rot90(Z1),cmap=plt.cm.gist_earth_r,extent=[xmin,xmax,ymin,ymax])
+ax[1].scatter(sf_mass,sf_col,s=[2],color='k',label='Star Forming Galaxies')
+ax[1].set_ylim([ymin,ymax])
+#ax1.scatter(sf_mass,sf_col,s=[2],color='b',label='Star Forming Galaxies')
+#ax[1].set_xlim([xmin,xmax])
+ax[1].legend(loc=2)
+ax[1].set_xlabel('log10(Stellar Mass) Msun')
+ax[1].set_ylabel('Rest frame g-i colour')
+plt.savefig('KDE_fit_gals.png')
+plt.close()
+
+plt.imshow(np.rot90(Z2),cmap=plt.cm.gist_earth_r,extent=[xmin,xmax,ymin,ymax],aspect='auto')
+plt.scatter(redshift,magr,s=[2],color='k')
+plt.xlim([xmin,xmax])
+plt.ylim([ymin,ymax])
+plt.xlabel('Redshift')
+plt.ylabel('r-band magnitude')
+plt.savefig('KDE_z_magr.png')
+plt.close()
+
+plt.figure()
+plt.scatter(sf_mass_cat,sf_magr_cat,label='mine sf',s=0.2)
+plt.scatter(sim_mass_sf,sim_r_sf,label='sim sf',s=0.2)
+plt.xlabel('mass')
+plt.ylabel('magr')
+plt.legend()
+plt.savefig('test_sf_mass_magr.png')
+
+plt.figure()
+plt.scatter(pass_mass_cat,pass_magr_cat,label='mine pass',s=0.2)
+plt.scatter(sim_mass_sf,sim_r_sf,label='sim pass',s=0.2)
+plt.xlabel('mass')
+plt.ylabel('magr')
+plt.legend()
+plt.savefig('test_pass_mass_magr.png')
+
+plt.figure()
+plt.scatter(sf_redshift_cat,sf_col_cat,label='mine sf',s=0.2)
+plt.scatter(sim_z_sf,sim_col_sf,label='sim sf',s=0.2)
+plt.xlabel('z')
+plt.ylabel('g-i')
+plt.legend()
+plt.savefig('test_sf_z_col.png')
+
+plt.figure()
+plt.scatter(pass_redshift_cat,pass_col_cat,label='mine pass',s=0.2)
+plt.scatter(sim_z_sf,sim_col_sf,label='sim pass',s=0.2)
+plt.xlabel('z')
+plt.ylabel('g-i')
+plt.legend()
+plt.savefig('test_pass_z_col.png')
+
+plt.imshow(np.rot90(Z2),cmap=plt.cm.gist_earth_r,extent=[xmin,xmax,ymin,ymax],aspect='auto')
+plt.scatter(z_cat,magr_cat,s=[2],color='k')
+plt.xlim([xmin,xmax])
+plt.xlabel('Redshift')
+plt.ylabel('Mag_r')
+plt.savefig('Drawn_from_distrib_z_magr.png')
+plt.close()
+
+
+fig,axs=plt.subplots(ncols=1)
+fig.tight_layout()
+#fig.subplots_adjust(hspace=0.5, left=0.07, right=0.93)
+hb=plt.hexbin(z_cat,abs_mag,gridsize=50,bins='log',cmap='inferno')
+axs.axis([min(z_cat),max(z_cat),min(abs_mag),max(abs_mag)])
+#axs.set_title("Absolute Mag_r vs z")
+axs.set_xlabel('Redshift')
+axs.set_ylabel('Absolute r-band Magnitude')
+#axs.tick_params(axis='x', colors='white')
+#axs.tick_params(axis='y', colors='white')
+cb = fig.colorbar(hb, ax=axs)
+cb.set_label('log10(Num gals)')
+plt.savefig('Density_Mag.png',bbox_inches='tight')
+
+fig,axs=plt.subplots(ncols=1)
+fig.tight_layout()
+hb1 = axs.hexbin(z_cat, SFR_cat, gridsize=50, bins='log', cmap='inferno')
+axs.axis([min(z_cat),max(z_cat),min(SFR_cat),max(SFR_cat)])
+#axs.set_title("SFR vs z")
+axs.set_xlabel('Redshift')
+axs.set_ylabel('log10(SFR)')
+#axs.tick_params(axis='x', colors='white')
+#axs.tick_params(axis='y', colors='white')
+cb = fig.colorbar(hb1, ax=axs)
+cb.set_label('log10(Num gals)')
+plt.savefig('Density_SFR.png',bbox_inches='tight')
+
+fig,axs=plt.subplots(ncols=1)
+fig.tight_layout()
+hb1 = axs.hexbin(mass_cat, col_cat, gridsize=50, bins='log', cmap='inferno')
+axs.axis([min(mass_cat),max(mass_cat),min(col_cat),max(col_cat)])
+#axs.set_title("SFR vs z")
+axs.set_xlabel('log10(Mass) Msun')
+axs.set_ylabel('g-i rest frame colour')
+#axs.tick_params(axis='x', colors='white')
+#axs.tick_params(axis='y', colors='white')
+cb = fig.colorbar(hb1, ax=axs)
+cb.set_label('log10(Num gals)')
+plt.savefig('Density_mass_col.png',bbox_inches='tight')
+plt.close()
+
+cmap_gals = clr.LinearSegmentedColormap.from_list('Custom Galaxies', ['#0000CD','#FF0000'], N=256)
+norm = matplotlib.colors.Normalize(vmin=min(col_cat), vmax=max(col_cat))
+
+fig=plt.figure()
+ax=fig.add_subplot(111,polar=True)
+ax.set_ylim(0,0.15)
+ax.set_yticks([0,0.05,0.1,0.15])
+ax.set_rlabel_position(0)
+ax.set_theta_zero_location("N")
+ax.grid(True)
+sc = ax.scatter(ra_cat, z_cat, c=col_cat, cmap=cmap_gals,norm=norm, s=1.2,lw=0)
+
+cax = fig.add_axes([0.8,0.1,0.01,0.8])
+fig.colorbar(sc, cax=cax, label="(g-i) colour")
+ax.set_title("Clustering of Mock Galaxies in TiDES", va='bottom', y=1.1)
+plt.subplots_adjust(top=0.8,right=0.8)
+
+plt.savefig('Clustering_simulation.png',bbox_inches='tight')
+plt.close()
+
+fig=plt.figure()
+ax=fig.add_subplot(111,polar=True)
+ax.set_ylim(0,1.5)
+ax.set_yticks([0,0.5,1.0,1.5])
+ax.set_rlabel_position(0)
+ax.set_theta_zero_location("N")
+ax.grid(True)
+sc = ax.scatter(ra_cat, z_cat, c=col_cat, cmap=cmap_gals,norm=norm, s=0.5,lw=0)
+
+cax = fig.add_axes([0.8,0.1,0.01,0.8])
+fig.colorbar(sc, cax=cax, label="(g-i) colour")
+ax.set_title("Clustering of Mock Galaxies in TiDES z<1.5", va='bottom', y=1.1)
+plt.subplots_adjust(top=0.8,right=0.8)
+
+plt.savefig('Clustering_simulation_fullz.png',bbox_inches='tight')
+plt.close()
+
+#Make magnitude cut
+
+mag_cut=np.where((magr_cat<=20.))[0]
+ra_cat_cut=ra_cat[mag_cut]
+magr_cat_cut=magr_cat[mag_cut]
+z_cat_cut=z_cat[mag_cut]
+col_cat_cut=col_cat[mag_cut]
+
+norm = matplotlib.colors.Normalize(vmin=min(col_cat_cut), vmax=max(col_cat_cut))
+
+fig=plt.figure()
+ax=fig.add_subplot(111,polar=True)
+ax.set_ylim(0,0.15)
+ax.set_yticks([0,0.05,0.1,0.15])
+ax.set_rlabel_position(0)
+ax.set_theta_zero_location("N")
+ax.grid(True)
+sc = ax.scatter(ra_cat_cut, z_cat_cut, c=col_cat_cut, cmap=cmap_gals,norm=norm, s=1.2,lw=0)
+
+cax = fig.add_axes([0.8,0.1,0.01,0.8])
+fig.colorbar(sc, cax=cax, label="(g-i) colour")
+ax.set_title("Clustering of Mock Galaxies in TiDES, mag_r <= 20", va='bottom', y=1.1)
+plt.subplots_adjust(top=0.8,right=0.8)
+
+plt.savefig('Clustering_simulation_mag_cut.png',bbox_inches='tight')
+plt.close()
+
+fig=plt.figure()
+ax=fig.add_subplot(111,polar=True)
+ax.set_ylim(0,1.5)
+ax.set_yticks([0,0.5,1.0,1.5])
+ax.set_rlabel_position(0)
+ax.set_theta_zero_location("N")
+ax.grid(True)
+sc = ax.scatter(ra_cat_cut, z_cat_cut, c=col_cat_cut, cmap=cmap_gals,norm=norm, s=0.5,lw=0)
+
+cax = fig.add_axes([0.8,0.1,0.01,0.8])
+fig.colorbar(sc, cax=cax, label="(g-i) colour")
+ax.set_title("Clustering of Mock Galaxies in TiDES, mag_r <= 20, z<1.5", va='bottom', y=1.1)
+plt.subplots_adjust(top=0.8,right=0.8)
+
+plt.savefig('Clustering_simulation_mag_cut_fullz.png',bbox_inches='tight')
+plt.close()
+
+dec_cut=np.where((0.<dec_cat)&(dec_cat<=5.))[0]
+ra_cat_cut=ra_cat[dec_cut]
+magr_cat_cut=magr_cat[dec_cut]
+z_cat_cut=z_cat[dec_cut]
+col_cat_cut=col_cat[dec_cut]
+
+norm = matplotlib.colors.Normalize(vmin=min(col_cat_cut), vmax=max(col_cat_cut))
+
+fig=plt.figure()
+ax=fig.add_subplot(111,polar=True)
+ax.set_ylim(0,0.15)
+ax.set_yticks([0,0.05,0.1,0.15])
+ax.set_rlabel_position(0)
+ax.set_theta_zero_location("N")
+ax.grid(True)
+sc = ax.scatter(ra_cat_cut, z_cat_cut, c=col_cat_cut, cmap=cmap_gals,norm=norm, s=1.2,lw=0)
+
+cax = fig.add_axes([0.8,0.1,0.01,0.8])
+fig.colorbar(sc, cax=cax, label="(g-i) colour")
+ax.set_title("Clustering of Mock Galaxies in TiDES, 0<dec<5", va='bottom', y=1.1)
+plt.subplots_adjust(top=0.8,right=0.8)
+
+plt.savefig('Clustering_simulation_dec_cut.png',bbox_inches='tight')
+plt.close()
+
+plt.figure()
+plt.scatter(sf_mass_cat,match_csv_col_sf,label='Mine SF k correct',s=0.2)
+plt.scatter(mass_sf_csv,col_sf_csv,label='Waves SF',s=0.4)
+plt.xlabel('log10 Mass')
+plt.ylabel('col')
+plt.legend()
+plt.savefig('testing_sf_col.png')
+
+plt.figure()
+plt.scatter(pass_mass_cat,match_csv_col_pass,label='Mine pass k correct',s=0.2)
+plt.scatter(mass_pass_csv,col_pass_csv,label='Waves pass',s=0.4)
+plt.legend()
+plt.xlabel('log10 Mass')
+plt.ylabel('col')
+plt.savefig('testing_pass_col.png')
+
+plt.figure()
+plt.scatter(sf_redshift_cat,SFR_kernel_sf,label='Mine SF',s=0.2)
+plt.scatter(z_sf_csv,np.log10(SFRs_sf),label='Waves SF',s=0.4)
+plt.legend()
+plt.savefig('testing_sf_z.png')
+
+plt.figure()
+plt.scatter(pass_redshift_cat,SFR_kernel_pass,label='Mine SF',s=0.2)
+plt.scatter(z_pass_csv,SFRs_pass,label='Waves SF',s=0.4)
+plt.legend()
+plt.savefig('testing_pass_z.png')
+
+plt.figure()
+plt.scatter(sf_mass_cat-0.75,sf_col_cat-0.14*(0.5/sf_col_cat)-0.7,label='Mine SF',s=0.2)
+plt.scatter(mass_sf_csv,col_sf_csv,label='Waves SF',s=0.4)
+plt.legend()
+plt.xlabel('log10 Mass')
+plt.ylabel('col')
+plt.savefig('testing_sf_col_nok.png')
+
+plt.figure()
+plt.scatter(pass_mass_cat,pass_col_cat,label='Mine pass',s=0.2)
+plt.scatter(mass_pass_csv,col_pass_csv,label='Waves pass',s=0.4)
+plt.legend()
+plt.xlabel('log10 Mass')
+plt.ylabel('col')
+plt.savefig('testing_pass_col_nok.png')
+
+plt.figure()
+plt.hist(SFR_kernel_sf,bins=50, normed=True)
+plt.xlabel('log10(SFR Msun p/year)')
+plt.ylabel('P(SFR)')
+plt.savefig('SFR_sf_draw_from_distrib.png')
+plt.close()
+
+plt.figure()
+plt.hist(SFR_kernel_pass,bins=50,normed=True)
+plt.xlabel('log10(SFR Msun p/year)')
+plt.ylabel('P(SFR)')
+plt.savefig('SFR_pass_draw_from_distrib.png')
+plt.close()
+'''
+
